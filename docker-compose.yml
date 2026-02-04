@@ -1,0 +1,20 @@
+# Dancecast — run the Python video server in Docker
+# From dancecast/:  docker compose up -d
+# Web UI: http://localhost:8000   Receiver: http://localhost:8000/receiver/
+# Put videos in ./media/ on the host; they appear in the server's library.
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: dancecast-server
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      DANCE_MEDIA_PATH: "/media"
+    volumes:
+      # Host media folder → container /media (video library)
+      - ./media:/media:ro
+    restart: unless-stopped

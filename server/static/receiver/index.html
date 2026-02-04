@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dancecast — Cast Receiver</title>
+  <style>
+    body { margin: 0; background: #000; color: #eee; font-family: system-ui, sans-serif; }
+    #video { width: 100%; height: 100vh; display: block; }
+    #status { position: fixed; top: 0; left: 0; right: 0; padding: 0.5rem 1rem; background: rgba(0,0,0,0.8); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div id="status">Receiver loading… (connect from sender to load video)</div>
+  <video id="video" crossorigin="anonymous"></video>
+  <script src="receiver.js"></script>
+</body>
+</html>

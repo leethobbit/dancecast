@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dancecast — Web</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Dancecast</h1>
+    <p class="subtitle">Web frontend (testing &amp; fallback). Videos are served from your desktop server.</p>
+  </header>
+
+  <main>
+    <section id="video-list-section">
+      <h2>Videos</h2>
+      <p id="list-status">Loading…</p>
+      <div id="video-list" class="video-grid"></div>
+    </section>
+
+    <section id="player-section" class="hidden">
+      <h2>Now playing</h2>
+      <div class="video-container">
+        <video id="video" controls crossorigin="anonymous" preload="metadata"></video>
+      </div>
+      <!-- Controls aligned with Cast receiver: speed, loop A–B, play/pause, seek -->
+      <div class="controls">
+        <div class="control-row">
+          <button type="button" id="btn-play">Play</button>
+          <button type="button" id="btn-pause">Pause</button>
+          <span class="time" id="time-display">0:00 / 0:00</span>
+        </div>
+        <div class="control-row">
+          <label>Speed:</label>
+          <select id="speed">
+            <option value="0.5">0.5×</option>
+            <option value="0.75">0.75×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.25">1.25×</option>
+            <option value="1.5">1.5×</option>
+          </select>
+          <button type="button" id="btn-back">−10 s</button>
+          <button type="button" id="btn-fwd">+10 s</button>
+        </div>
+        <div class="control-row loop">
+          <label>Loop A–B:</label>
+          <button type="button" id="btn-set-a">Set A</button>
+          <button type="button" id="btn-set-b">Set B</button>
+          <span id="loop-status">Off</span>
+        </div>
+        <input type="range" id="seek" min="0" max="100" value="0" step="0.1" />
+      </div>
+      <p><button type="button" id="btn-back-to-list">← Back to list</button></p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
