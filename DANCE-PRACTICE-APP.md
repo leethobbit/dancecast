@@ -1,5 +1,7 @@
 # Dancecast — Implementation Plan
 
+**Note:** The repo is now implemented with a **single server + WebSocket hub** (no Google Cast). The Flutter app and receiver communicate via the server. See the main [README.md](README.md) for current architecture and usage.
+
 ## Goal
 
 Deliver a system where:

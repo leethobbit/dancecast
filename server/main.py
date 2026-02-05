@@ -2,15 +2,18 @@
 Dancecast — Video server (FastAPI).
 
 Serves video files with range-request support (required for seeking in browsers
-and Cast receivers), lists videos via API, and hosts the web frontend and
-Cast receiver static assets.
+and the receiver), lists videos via API, hosts the web frontend and receiver
+static assets, and runs a WebSocket hub so the Flutter app (sender) can
+control the receiver (browser on TV/Pi) without Google Cast.
 
 Media path and port are configured via environment variables; see README.md.
 """
 
+import json
 import os
+import uuid
 from pathlib import Path
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response
 
@@ -42,6 +45,17 @@ app.add_middleware(
 
 STATIC_WEB_DIR = SERVER_DIR / "static" / "web"
 STATIC_RECEIVER_DIR = SERVER_DIR / "static" / "receiver"
+
+# -----------------------------------------------------------------------------
+# WebSocket hub: receivers (browser on TV/Pi) register here; senders (Flutter)
+# attach to a display and send LOAD/PLAY/PAUSE/SEEK/SET_RATE/SET_LOOP. We
+# forward commands to the attached display's WebSocket instead of handling
+# them server-side, so playback stays in the receiver.
+# -----------------------------------------------------------------------------
+# display_id -> { "ws": WebSocket, "name": str }
+_displays: dict[str, dict] = {}
+# Sender WebSocket -> display_id they are attached to (for forwarding commands)
+_sender_attachments: dict[WebSocket, str] = {}
 
 
 def _stream_file_range(file_path: Path, start: int, end: int, file_size: int):
@@ -149,12 +163,12 @@ def serve_video(request: Request, index: int):
 @app.get("/receiver/{path:path}")
 def serve_receiver(path: str):
     """
-    Serve the Cast receiver app static files at /receiver/...
+    Serve the receiver app static files at /receiver/...
 
-    The receiver is a web app (HTML/JS) that runs on the Cast device or in
-    Chromium on the Pi. It is mounted here so the same server hosts both
-    the API and the receiver; Cast devices load it via the receiver URL
-    (e.g. http://<desktop-ip>:8000/receiver/).
+    The receiver is a web app (HTML/JS) that runs in a browser on the TV or
+    Pi. It connects to the WebSocket hub at /ws and registers as a display;
+    the Flutter app then discovers it via GET /api/displays and sends
+    commands (LOAD/PLAY/PAUSE/SEEK/SET_RATE/SET_LOOP) through the hub.
     """
     if not path or path == "index.html" or path == "":
         file_path = STATIC_RECEIVER_DIR / "index.html"
@@ -173,6 +187,104 @@ def serve_receiver(path: str):
 def health():
     """Simple health check for scripts or load balancers."""
     return {"status": "ok", "media_path": str(MEDIA_PATH)}
+
+
+@app.get("/api/displays")
+def list_displays():
+    """
+    Return the current list of registered displays (receiver browsers that
+    have connected to the WebSocket hub and sent a "register" message).
+
+    Used by the Flutter app to discover which TVs/Pi browsers are available
+    before opening a WebSocket for control. Returns id and name for each
+    display so the user can pick one.
+    """
+    return {
+        "displays": [
+            {"id": display_id, "name": info["name"]}
+            for display_id, info in _displays.items()
+        ]
+    }
+
+
+@app.websocket("/ws")
+async def websocket_hub(websocket: WebSocket):
+    """
+    WebSocket hub: accepts two roles.
+
+    - Receiver (display): first message must be { "type": "register", "name": "..." }.
+      Server assigns an id and stores the connection; we later forward
+      command messages to this socket.
+    - Sender (Flutter): can send list_displays (we reply with displays),
+      attach (store which display this sender controls), then LOAD/PLAY/PAUSE/
+      SEEK/SET_RATE/SET_LOOP (we forward to the attached display's WebSocket).
+    """
+    await websocket.accept()
+    role = None
+    my_display_id = None  # if this connection is a receiver, its display id
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            msg_type = msg.get("type")
+
+            # First message determines role: "register" => receiver (browser on TV/Pi),
+            # anything else => sender (Flutter app). We don't handle playback here;
+            # we just forward commands to the attached display's WebSocket.
+            if role is None:
+                if msg_type == "register":
+                    role = "receiver"
+                    name = msg.get("name", "TV")
+                    my_display_id = str(uuid.uuid4())
+                    _displays[my_display_id] = {"ws": websocket, "name": name}
+                    await websocket.send_json({"type": "registered", "id": my_display_id})
+                    continue
+                role = "sender"
+
+            if role == "sender":
+                if msg_type == "list_displays":
+                    await websocket.send_json({
+                        "type": "displays",
+                        "displays": [
+                            {"id": did, "name": info["name"]}
+                            for did, info in _displays.items()
+                        ],
+                    })
+                elif msg_type == "attach":
+                    display_id = msg.get("displayId")
+                    if display_id in _displays:
+                        _sender_attachments[websocket] = display_id
+                        await websocket.send_json({"type": "attached", "displayId": display_id})
+                    else:
+                        await websocket.send_json({"type": "error", "message": "Display not found"})
+                elif msg_type in ("LOAD", "PLAY", "PAUSE", "SEEK", "SET_RATE", "SET_LOOP"):
+                    # Forward the raw message to the display this sender is attached to
+                    display_id = _sender_attachments.get(websocket)
+                    if display_id and display_id in _displays:
+                        await _displays[display_id]["ws"].send_text(data)
+                    else:
+                        await websocket.send_json(
+                            {"type": "error", "message": "Not attached to a display"}
+                        )
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if role == "receiver" and my_display_id and my_display_id in _displays:
+            # Notify any sender attached to this display so the UI can update
+            for sender_ws, attached_id in list(_sender_attachments.items()):
+                if attached_id == my_display_id:
+                    try:
+                        await sender_ws.send_json(
+                            {"type": "display_gone", "displayId": my_display_id}
+                        )
+                    except Exception:
+                        pass
+                    del _sender_attachments[sender_ws]
+            del _displays[my_display_id]
+        elif role == "sender":
+            _sender_attachments.pop(websocket, None)
 
 
 @app.get("/")
