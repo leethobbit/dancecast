@@ -19,14 +19,12 @@
   const seekBar = document.getElementById("seek");
   const speedSelect = document.getElementById("speed");
   const loopStatus = document.getElementById("loop-status");
+  const playerStatus = document.getElementById("player-status");
 
   let loopA = null;
   let loopB = null;
-
-  function showList() {
-    playerSection.classList.add("hidden");
-    videoListSection.classList.remove("hidden");
-  }
+  let currentVideoPath = null;
+  var playerVisible = false;
 
   function showPlayer() {
     videoListSection.classList.add("hidden");
@@ -79,6 +77,24 @@
     updateTimeDisplay();
     updateSeekBar();
   });
+  video.addEventListener("canplay", function () {
+    setPlayerStatus("");
+  });
+  video.addEventListener("waiting", function () {
+    setPlayerStatus("Loading…");
+  });
+  video.addEventListener("error", function () {
+    var msg = "Failed to load video.";
+    if (video.error && video.error.message) msg += " " + video.error.message;
+    setPlayerStatus(msg);
+  });
+
+  function setPlayerStatus(text) {
+    if (playerStatus) {
+      playerStatus.textContent = text;
+      playerStatus.className = "player-status" + (text ? " visible" : "");
+    }
+  }
 
   seekBar.addEventListener("input", function () {
     const pct = seekBar.value / 100;
@@ -113,6 +129,60 @@
   });
   document.getElementById("btn-back-to-list").addEventListener("click", showList);
 
+  // Thumbnail lazy-loading: max concurrent loads so the list stays responsive.
+  var thumbMaxConcurrent = 3;
+  var thumbActiveLoads = 0;
+  var thumbPending = [];
+  var thumbObserver = null;
+
+  function thumbTryLoadNext() {
+    if (playerVisible) return;
+    if (thumbActiveLoads >= thumbMaxConcurrent || thumbPending.length === 0) return;
+    var item = thumbPending.shift();
+    if (!item || !item.card.dataset.videoPath) return;
+    var thumbVideo = item.thumbVideo;
+    var path = item.card.dataset.videoPath;
+    thumbVideo.src = API_BASE + encodeURI(path).replace(/%2F/g, "/");
+    thumbActiveLoads += 1;
+    function done() {
+      thumbActiveLoads -= 1;
+      thumbTryLoadNext();
+    }
+    thumbVideo.addEventListener("loadedmetadata", done, { once: true });
+    thumbVideo.addEventListener("error", done, { once: true });
+  }
+
+  function thumbOnVisible(entries, observer) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      var card = entry.target;
+      observer.unobserve(card);
+      if (card.dataset.thumbStarted) return;
+      var thumbVideo = card.querySelector(".video-card-thumb video");
+      if (!thumbVideo || thumbVideo.src) return;
+      card.dataset.thumbStarted = "1";
+      thumbPending.push({ card: card, thumbVideo: thumbVideo });
+      thumbTryLoadNext();
+    });
+  }
+
+  function thumbCancelAll() {
+    videoList.querySelectorAll(".video-card").forEach(function (card) {
+      var v = card.querySelector(".video-card-thumb video");
+      if (v && v.src) {
+        v.removeAttribute("src");
+        v.load();
+        var thumbWrap = card.querySelector(".video-card-thumb");
+        if (thumbWrap) {
+          thumbWrap.classList.remove("loaded", "error");
+        }
+        delete card.dataset.thumbStarted;
+        if (thumbObserver) thumbObserver.observe(card);
+      }
+    });
+    thumbPending.length = 0;
+  }
+
   // Load video list from server API (same API the Flutter app will use).
   function loadList() {
     listStatus.textContent = "Loading…";
@@ -124,11 +194,14 @@
       .then(function (data) {
         listStatus.textContent = data.videos.length ? "Pick a video:" : "No videos found. Add files to the server media folder.";
         videoList.innerHTML = "";
+        thumbPending.length = 0;
+
         data.videos.forEach(function (v) {
           const card = document.createElement("div");
           card.className = "video-card";
           card.setAttribute("role", "button");
           card.tabIndex = 0;
+          card.dataset.videoPath = v.path;
 
           const thumbWrap = document.createElement("div");
           thumbWrap.className = "video-card-thumb";
@@ -137,8 +210,7 @@
           thumbVideo.preload = "metadata";
           thumbVideo.playsInline = true;
           thumbVideo.setAttribute("crossorigin", "anonymous");
-          // Encode path so filenames with spaces/special chars work
-          thumbVideo.src = API_BASE + encodeURI(v.path).replace(/%2F/g, "/");
+          // src set later when card is visible (lazy load)
           thumbVideo.addEventListener("loadedmetadata", function onMeta() {
             var targetTime = thumbVideo.duration >= 1 ? 1 : (thumbVideo.duration || 1) * 0.5;
             thumbVideo.currentTime = Math.min(targetTime, Math.max(0, thumbVideo.duration - 0.1));
@@ -176,20 +248,86 @@
 
           videoList.appendChild(card);
         });
+
+        // Lazy-load thumbnails when cards enter the viewport (max 3 at a time).
+        // Large rootMargin so cards below the fold are queued too; they load 3 at a time.
+        if (typeof IntersectionObserver !== "undefined") {
+          thumbObserver = new IntersectionObserver(thumbOnVisible, {
+            root: null,
+            rootMargin: "9999px 0px 9999px 0px",
+            threshold: 0.01
+          });
+          videoList.querySelectorAll(".video-card").forEach(function (card) {
+            thumbObserver.observe(card);
+          });
+        } else {
+          // Fallback: load all thumbnails in sequence (no IntersectionObserver).
+          videoList.querySelectorAll(".video-card").forEach(function (card) {
+            thumbPending.push({
+              card: card,
+              thumbVideo: card.querySelector(".video-card-thumb video")
+            });
+            card.dataset.thumbStarted = "1";
+          });
+          thumbTryLoadNext();
+        }
       })
       .catch(function (err) {
         listStatus.textContent = "Error loading list: " + err.message;
       });
   }
 
-  function playVideo(path) {
-    video.src = API_BASE + encodeURI(path).replace(/%2F/g, "/");
+  function showList() {
+    video.pause();
+    video.removeAttribute("src");
     video.load();
+    playerSection.classList.add("hidden");
+    videoListSection.classList.remove("hidden");
+    currentVideoPath = null;
+    playerVisible = false;
+    thumbTryLoadNext();
+    if (location.hash && location.hash.indexOf("#/watch") === 0) {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }
+
+  function resetVideoElement() {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+
+  function playVideo(path) {
+    thumbCancelAll();
+    resetVideoElement();
+    currentVideoPath = path;
+    playerVisible = true;
+    var videoUrl = API_BASE + encodeURI(path).replace(/%2F/g, "/");
+    // Defer setting src so the previous request is fully aborted before we start a new one.
+    setTimeout(function () {
+      if (currentVideoPath !== path) return;
+      video.src = videoUrl;
+      video.load();
+    }, 0);
     video.playbackRate = parseFloat(speedSelect.value);
     loopA = loopB = null;
     updateLoopStatus();
+    setPlayerStatus("Loading…");
     showPlayer();
+    // Update browser URL so it reflects the current video (not just "index").
+    var hash = "#/watch" + path;
+    if (location.hash !== hash) {
+      history.replaceState({ path: path }, "", location.pathname + location.search + hash);
+    }
   }
 
   loadList();
+
+  // Restore video from URL hash on load (e.g. refresh or bookmark #/watch/videos/0).
+  if (location.hash.indexOf("#/watch") === 0) {
+    try {
+      var path = decodeURIComponent(location.hash.slice("#/watch".length));
+      if (path) playVideo(path);
+    } catch (e) {}
+  }
 })();

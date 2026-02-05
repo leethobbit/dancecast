@@ -21,8 +21,9 @@
 
     <section id="player-section" class="hidden">
       <h2>Now playing</h2>
+      <p id="player-status" class="player-status" aria-live="polite"></p>
       <div class="video-container">
-        <video id="video" controls crossorigin="anonymous" preload="metadata"></video>
+        <video id="video" controls crossorigin="anonymous" preload="auto"></video>
       </div>
       <!-- Controls aligned with Cast receiver: speed, loop A–B, play/pause, seek -->
       <div class="controls">

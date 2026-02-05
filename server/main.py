@@ -10,7 +10,6 @@ Media path and port are configured via environment variables; see README.md.
 
 import os
 from pathlib import Path
-
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response
@@ -63,57 +62,64 @@ def _stream_file_range(file_path: Path, start: int, end: int, file_size: int):
             yield data
 
 
+def _get_video_list() -> list[Path]:
+    """
+    Return a sorted list of video file paths in MEDIA_PATH.
+    Same order is used for the list API and for serving by index, so /videos/0
+    always refers to the first file in this list.
+    """
+    if not MEDIA_PATH.exists():
+        return []
+    allowed = {".mp4", ".webm", ".mkv", ".mov", ".m4v"}
+    out = []
+    for f in sorted(MEDIA_PATH.iterdir()):
+        if f.is_file() and f.suffix.lower() in allowed:
+            out.append(f)
+    return out
+
+
 @app.get("/api/videos")
 def list_videos():
     """
     List video files in the media directory.
 
-    Returns a JSON array of objects with `name` (filename) and `path` (URL path
-    to request the video, e.g. /videos/filename.mp4). Only includes common video
-    extensions. Used by the web frontend and (later) the Flutter app to show
-    the library.
+    Returns a JSON array with `name` (display filename, may contain spaces/emojis)
+    and `path` (URL path by index, e.g. /videos/0, /videos/1). Paths are safe for
+    URLs; the actual filename is never in the path.
     """
-    if not MEDIA_PATH.exists():
-        return {"videos": []}
-    allowed = {".mp4", ".webm", ".mkv", ".mov", ".m4v"}
-    videos = []
-    for f in sorted(MEDIA_PATH.iterdir()):
-        if f.is_file() and f.suffix.lower() in allowed:
-            # Path for URL: /videos/<filename>
-            path = f"/videos/{f.name}"
-            videos.append({"name": f.name, "path": path})
+    files = _get_video_list()
+    videos = [{"name": f.name, "path": f"/videos/{i}"} for i, f in enumerate(files)]
     return {"videos": videos}
 
 
-@app.get("/videos/{filename:path}")
-def serve_video(request: Request, filename: str):
+@app.get("/videos/{index:int}")
+def serve_video(request: Request, index: int):
     """
-    Serve a video file with HTTP Range support.
+    Serve a video file by index (0-based, same order as GET /api/videos).
 
-    Range requests are required for seeking: browsers and Cast receivers send
-    Range headers (e.g. Range: bytes=0-1048575). We return 206 Partial Content
-    with the requested byte range. Without this, the player would have to
-    download the whole file before seeking, and seeking would be slow or broken.
+    Uses index instead of filename so URLs stay safe (no spaces, emojis, or
+    special characters). Range requests are supported for seeking.
     """
-    # Normalize: strip leading slashes so MEDIA_PATH / filename stays under MEDIA_PATH
-    filename = filename.lstrip("/").replace("\\", "/")
-    if not filename:
+    files = _get_video_list()
+    if index < 0 or index >= len(files):
         raise HTTPException(status_code=404, detail="Video not found")
-    file_path = (MEDIA_PATH / filename).resolve()
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Video not found")
-    # Security: ensure the resolved path is still under MEDIA_PATH.
-    try:
-        file_path.relative_to(MEDIA_PATH)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Video not found")
+    file_path = files[index]
 
     file_size = file_path.stat().st_size
     range_header = request.headers.get("range")
 
+    # Always advertise range support so the browser requests ranges and can continue loading.
+    accept_ranges_headers = {"Accept-Ranges": "bytes"}
+
     if not range_header or not range_header.strip().lower().startswith("bytes="):
-        # No range: return full file (200). Some clients don't send Range on first request.
-        return FileResponse(file_path, media_type="video/mp4")
+        # No range: return full file (200). FileResponse is more reliable than a custom
+        # stream when the client may disconnect or navigate away; Accept-Ranges lets
+        # the browser use range requests for subsequent seeks.
+        return FileResponse(
+            file_path,
+            media_type="video/mp4",
+            headers=accept_ranges_headers,
+        )
 
     # Parse "bytes=start-end" (end is inclusive). Optional end => to end of file.
     try:
@@ -129,7 +135,7 @@ def serve_video(request: Request, filename: str):
 
     headers = {
         "Content-Range": f"bytes {start}-{end}/{file_size}",
-        "Accept-Ranges": "bytes",
+        **accept_ranges_headers,
         "Content-Length": str(content_length),
     }
     return StreamingResponse(

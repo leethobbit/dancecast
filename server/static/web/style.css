@@ -202,3 +202,17 @@ select {
   color: var(--muted);
   font-size: 0.9rem;
 }
+
+.player-status {
+  font-size: 0.9rem;
+  margin: 0 0 0.5rem;
+  min-height: 1.4em;
+}
+
+.player-status.visible {
+  color: var(--muted);
+}
+
+.player-status.visible:empty {
+  display: none;
+}
